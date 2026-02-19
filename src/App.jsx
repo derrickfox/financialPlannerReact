@@ -1,4 +1,9 @@
 import { useMemo, useState } from "react";
+import {
+  computeTotalMonthlyOwnerCost,
+  formatMonthlyOwnerCost,
+  getMortgagePayment,
+} from "./lib/rentVsBuyOwnerCost";
 
 const APP_MODE = {
   RENT_BUY: "rent-buy",
@@ -6,8 +11,8 @@ const APP_MODE = {
 };
 
 const DEFAULT_RENT_BUY_INPUTS = {
-  years: 10,
-  monthlyRent: 2200,
+  years: 30,
+  monthlyRent: 3300,
   rentIncreasePct: 3,
   rentersInsuranceMonthly: 22,
   homePrice: 500000,
@@ -421,19 +426,6 @@ function annualToMonthlyRate(ratePct) {
 
 function annualRateMultiplier(ratePct) {
   return 1 + asNumber(ratePct, 0) / 100;
-}
-
-function getMortgagePayment(principal, annualRatePct, termYears) {
-  const months = Math.max(Math.round(termYears * 12), 1);
-  const monthlyRate = asNumber(annualRatePct, 0) / 100 / 12;
-
-  if (principal <= 0) return 0;
-  if (monthlyRate === 0) return principal / months;
-
-  return (
-    (principal * monthlyRate) /
-    (1 - Math.pow(1 + monthlyRate, -months))
-  );
 }
 
 function calculateRentVsBuy(inputs) {
@@ -1242,7 +1234,31 @@ function RentVsBuyPage({ inputs, setInputs, onSwitch }) {
     RENT_BUY_FIELD_GROUPS.map(() => true),
   );
   const analysis = useMemo(() => calculateRentVsBuy(inputs), [inputs]);
+  const totalMonthlyOwnerCost = useMemo(
+    () => computeTotalMonthlyOwnerCost(inputs),
+    [inputs],
+  );
   const { assumptions, summary, timeline } = analysis;
+  const metricCards = [
+    {
+      title: "Renting Net Cost",
+      value: formatMoney(summary.renterNetCost),
+    },
+    {
+      title: "Buying Net Cost",
+      value: formatMoney(summary.ownerNetCost),
+    },
+    {
+      title: "Estimated Mortgage Payment",
+      value: `${formatMoney(assumptions.monthlyMortgagePayment)}/mo`,
+    },
+    {
+      title: "Total Monthly Owner Cost",
+      value: formatMonthlyOwnerCost(totalMonthlyOwnerCost),
+      helpText:
+        "Includes principal & interest + tax + insurance + HOA + maintenance. One-time costs excluded.",
+    },
+  ];
 
   const outcomeMessage =
     summary.winner === "buy"
@@ -1297,18 +1313,17 @@ function RentVsBuyPage({ inputs, setInputs, onSwitch }) {
           <section className="outcome">
             <p className="result-line">{outcomeMessage}</p>
             <div className="metric-grid">
-              <article>
-                <h4>Renting Net Cost</h4>
-                <p>{formatMoney(summary.renterNetCost)}</p>
-              </article>
-              <article>
-                <h4>Buying Net Cost</h4>
-                <p>{formatMoney(summary.ownerNetCost)}</p>
-              </article>
-              <article>
-                <h4>Estimated Mortgage Payment</h4>
-                <p>{formatMoney(assumptions.monthlyMortgagePayment)}/mo</p>
-              </article>
+              {metricCards.map((card) => (
+                <article key={card.title}>
+                  <h4>{card.title}</h4>
+                  <p>{card.value}</p>
+                  {card.helpText ? (
+                    <small className="metric-help" title={card.helpText}>
+                      {card.helpText}
+                    </small>
+                  ) : null}
+                </article>
+              ))}
             </div>
             <p className="result-subline">
               {summary.breakEvenYear
