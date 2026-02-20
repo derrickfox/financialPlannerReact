@@ -15,6 +15,7 @@
   --target: #b86a1f;
   --accent: #0f3b4f;
   --shadow: 0 18px 40px rgb(10 26 35 / 14%);
+  --frame-color: rgb(95 111 120 / 55%);
 }
 
 *,
@@ -31,6 +32,18 @@ body {
   min-height: 100vh;
 }
 
+body.body-frame-rent {
+  --frame-color: rgb(229 107 31 / 72%);
+}
+
+body.body-frame-buy {
+  --frame-color: rgb(12 143 120 / 72%);
+}
+
+body.body-frame-tie {
+  --frame-color: rgb(95 111 120 / 55%);
+}
+
 body::before {
   content: "";
   position: fixed;
@@ -41,6 +54,16 @@ body::before {
     radial-gradient(circle at 74% 86%, #ffce9940 0, transparent 32%);
   pointer-events: none;
   z-index: -1;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  border: 3px solid var(--frame-color);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 1000;
 }
 
 .page {

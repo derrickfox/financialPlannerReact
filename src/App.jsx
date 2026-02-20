@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   computeTotalMonthlyOwnerCost,
   formatMonthlyOwnerCost,
@@ -1448,6 +1448,28 @@ function App() {
   const [mode, setMode] = useState(APP_MODE.RENT_BUY);
   const [rentBuyInputs, setRentBuyInputs] = useState(DEFAULT_RENT_BUY_INPUTS);
   const [retirementInputs, setRetirementInputs] = useState(DEFAULT_RETIREMENT_INPUTS);
+  const rentVsBuyWinner = useMemo(
+    () => calculateRentVsBuy(rentBuyInputs).summary.winner,
+    [rentBuyInputs],
+  );
+
+  useEffect(() => {
+    const frameClasses = ["body-frame-rent", "body-frame-buy", "body-frame-tie"];
+    document.body.classList.remove(...frameClasses);
+
+    const winnerClass =
+      rentVsBuyWinner === "buy"
+        ? "body-frame-buy"
+        : rentVsBuyWinner === "rent"
+          ? "body-frame-rent"
+          : "body-frame-tie";
+
+    document.body.classList.add(winnerClass);
+
+    return () => {
+      document.body.classList.remove(...frameClasses);
+    };
+  }, [rentVsBuyWinner]);
 
   if (mode === APP_MODE.RENT_BUY) {
     return (
