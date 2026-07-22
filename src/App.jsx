@@ -688,6 +688,154 @@ function AppHub({ onSelectApp }) {
   );
 }
 
+// AI_CHANGE:
+// Tool: Claude Code
+// Model: Claude Opus 4.8
+// Timestamp: 2026-07-22T00:00:00-04:00
+// Purpose: Shared hover behaviour for the line charts — tracks which data point the pointer
+//          is nearest, and supports arrow-key traversal for keyboard users.
+// Reason: The charts plotted values with no way to read one. Y-axis ticks only give six
+//         reference values across the whole range, so answering "what is this at year 12?"
+//         meant eyeballing between gridlines. Nearest-x selection (rather than requiring the
+//         pointer to land on the stroke itself) keeps the target area the full chart height,
+//         which matters most where the two lines converge.
+function useChartHover({ pointCount, pad, graphWidth, width }) {
+  const [activeIndex, setActiveIndex] = useState(null);
+
+  const indexFromClientX = (event) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (!bounds.width) return null;
+
+    // The SVG scales to its container, so map client pixels back into viewBox units.
+    const svgX = ((event.clientX - bounds.left) / bounds.width) * width;
+    const ratio = (svgX - pad.left) / (graphWidth || 1);
+    const denominator = Math.max(pointCount - 1, 1);
+
+    return clamp(Math.round(ratio * denominator), 0, pointCount - 1);
+  };
+
+  const handlePointerMove = (event) => {
+    setActiveIndex(indexFromClientX(event));
+  };
+
+  const handlePointerLeave = () => setActiveIndex(null);
+
+  const handleKeyDown = (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+
+    event.preventDefault();
+    setActiveIndex((previous) => {
+      const start = previous ?? 0;
+      const next = event.key === "ArrowLeft" ? start - 1 : start + 1;
+      return clamp(next, 0, pointCount - 1);
+    });
+  };
+
+  const handleBlur = () => setActiveIndex(null);
+
+  return {
+    activeIndex,
+    hoverProps: {
+      onPointerMove: handlePointerMove,
+      onPointerLeave: handlePointerLeave,
+      onKeyDown: handleKeyDown,
+      onBlur: handleBlur,
+      tabIndex: 0,
+    },
+  };
+}
+
+// Approximate advance width of IBM Plex Mono at the 11px used by .tooltip-text. SVG gives no
+// synchronous way to measure text, and a monospace face makes the estimate reliable.
+const TOOLTIP_CHAR_WIDTH = 6.65;
+const TOOLTIP_PADDING = 10;
+const TOOLTIP_ROW_HEIGHT = 15;
+const TOOLTIP_TITLE_HEIGHT = 17;
+const TOOLTIP_LABEL_GAP = 16;
+
+function ChartTooltip({ anchorX, anchorY, title, rows, chart }) {
+  const contentWidth = Math.max(
+    title.length * TOOLTIP_CHAR_WIDTH,
+    ...rows.map(
+      (row) =>
+        (row.label.length + row.value.length) * TOOLTIP_CHAR_WIDTH + TOOLTIP_LABEL_GAP,
+    ),
+  );
+  const boxWidth = contentWidth + TOOLTIP_PADDING * 2;
+  const boxHeight =
+    TOOLTIP_TITLE_HEIGHT + rows.length * TOOLTIP_ROW_HEIGHT + TOOLTIP_PADDING * 1.4;
+
+  // Prefer sitting to the right of the point; flip left when that would overflow the plot.
+  const spillsRight = anchorX + 14 + boxWidth > chart.width - chart.pad.right;
+  const boxX = spillsRight ? anchorX - 14 - boxWidth : anchorX + 14;
+  const boxY = clamp(
+    anchorY - boxHeight / 2,
+    chart.pad.top,
+    chart.height - chart.pad.bottom - boxHeight,
+  );
+
+  return (
+    <g className="chart-tooltip" pointerEvents="none">
+      <rect
+        x={boxX}
+        y={boxY}
+        width={boxWidth}
+        height={boxHeight}
+        rx={7}
+        className="tooltip-box"
+      />
+      <text
+        x={boxX + TOOLTIP_PADDING}
+        y={boxY + TOOLTIP_PADDING + 4}
+        className="tooltip-text tooltip-title"
+      >
+        {title}
+      </text>
+      {rows.map((row, index) => {
+        const rowY = boxY + TOOLTIP_TITLE_HEIGHT + TOOLTIP_PADDING + index * TOOLTIP_ROW_HEIGHT;
+        return (
+          <g key={row.label}>
+            <circle
+              cx={boxX + TOOLTIP_PADDING + 3}
+              cy={rowY - 4}
+              r={3}
+              className={`tooltip-swatch ${row.tone}`}
+            />
+            <text
+              x={boxX + TOOLTIP_PADDING + 11}
+              y={rowY}
+              className="tooltip-text tooltip-label"
+            >
+              {row.label}
+            </text>
+            <text
+              x={boxX + boxWidth - TOOLTIP_PADDING}
+              y={rowY}
+              textAnchor="end"
+              className="tooltip-text tooltip-value"
+            >
+              {row.value}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+function ChartCrosshair({ x, chart }) {
+  return (
+    <line
+      x1={x}
+      y1={chart.pad.top}
+      x2={x}
+      y2={chart.height - chart.pad.bottom}
+      className="hover-crosshair"
+      pointerEvents="none"
+    />
+  );
+}
+
 function RentVsBuyChart({ timeline, breakEvenYear }) {
   if (!timeline.length) return null;
 
@@ -733,6 +881,14 @@ function RentVsBuyChart({ timeline, breakEvenYear }) {
   //         ahead), but with no zero rule there was nothing to tell "costs you $200k" from
   //         "nets you $200k" at a glance. And break-even was stated in prose while the chart
   //         left the crossing unmarked, so the number could not be located on the plot.
+  const { activeIndex, hoverProps } = useChartHover({
+    pointCount: timeline.length,
+    pad,
+    graphWidth,
+    width,
+  });
+  const activePoint = activeIndex === null ? null : timeline[activeIndex];
+
   const zeroY = minValue < 0 && maxValue > 0 ? getY(0) : null;
   const breakEvenX =
     breakEvenYear !== null && breakEvenYear !== undefined && timeline.length > 1
@@ -748,7 +904,17 @@ function RentVsBuyChart({ timeline, breakEvenYear }) {
         </h3>
         <p>Net cost = total cash outflows minus current assets.</p>
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="line-chart" role="img">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="line-chart"
+        role="img"
+        aria-label={
+          activePoint
+            ? `Year ${activePoint.year}: renting ${formatMoney(activePoint.renterNetCost)}, buying ${formatMoney(activePoint.ownerNetCost)}`
+            : "Net cost over time for renting versus buying. Use arrow keys to read individual years."
+        }
+        {...hoverProps}
+      >
         {yTicks.map((tick) => (
           <g key={tick.y}>
             <line
@@ -811,6 +977,43 @@ function RentVsBuyChart({ timeline, breakEvenYear }) {
             </g>
           );
         })}
+        {activePoint ? (
+          <>
+            <ChartCrosshair x={getX(activeIndex)} chart={{ width, height, pad }} />
+            <circle
+              cx={getX(activeIndex)}
+              cy={getY(activePoint.renterNetCost)}
+              r={5}
+              className="hover-dot rent"
+            />
+            <circle
+              cx={getX(activeIndex)}
+              cy={getY(activePoint.ownerNetCost)}
+              r={5}
+              className="hover-dot buy"
+            />
+            <ChartTooltip
+              anchorX={getX(activeIndex)}
+              anchorY={
+                (getY(activePoint.renterNetCost) + getY(activePoint.ownerNetCost)) / 2
+              }
+              title={`Year ${activePoint.year}`}
+              rows={[
+                {
+                  label: "Renting",
+                  value: formatMoney(activePoint.renterNetCost),
+                  tone: "rent",
+                },
+                {
+                  label: "Buying",
+                  value: formatMoney(activePoint.ownerNetCost),
+                  tone: "buy",
+                },
+              ]}
+              chart={{ width, height, pad }}
+            />
+          </>
+        ) : null}
       </svg>
       <div className="chart-legend">
         <span>
@@ -957,6 +1160,14 @@ function RetirementBalanceChart({ timeline, retirementAge }) {
   });
 
   const xLabelIndices = getXLabelIndices(timeline.length);
+  const { activeIndex, hoverProps } = useChartHover({
+    pointCount: timeline.length,
+    pad,
+    graphWidth,
+    width,
+  });
+  const activePoint = activeIndex === null ? null : timeline[activeIndex];
+
   const zeroY = minValue < 0 && maxValue > 0 ? getY(0) : null;
   const retirementIndex = timeline.findIndex((point) => point.age === retirementAge);
   const retirementX = retirementIndex >= 0 ? getX(retirementIndex) : null;
@@ -970,7 +1181,17 @@ function RetirementBalanceChart({ timeline, retirementAge }) {
         </h3>
         <p>Includes contributions, growth, withdrawals, inflation, and taxes.</p>
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="line-chart" role="img">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="line-chart"
+        role="img"
+        aria-label={
+          activePoint
+            ? `Age ${activePoint.age}: balance ${formatMoney(activePoint.balance)}`
+            : "Portfolio balance by age. Use arrow keys to read individual ages."
+        }
+        {...hoverProps}
+      >
         {yTicks.map((tick) => (
           <g key={tick.y}>
             <line
@@ -1032,6 +1253,41 @@ function RetirementBalanceChart({ timeline, retirementAge }) {
             </g>
           );
         })}
+        {activePoint ? (
+          <>
+            <ChartCrosshair x={getX(activeIndex)} chart={{ width, height, pad }} />
+            <circle
+              cx={getX(activeIndex)}
+              cy={getY(activePoint.balance)}
+              r={5}
+              className="hover-dot retirement"
+            />
+            <ChartTooltip
+              anchorX={getX(activeIndex)}
+              anchorY={getY(activePoint.balance)}
+              title={`Age ${activePoint.age}`}
+              rows={[
+                {
+                  label: "Balance",
+                  value: formatMoney(activePoint.balance),
+                  tone: "retirement",
+                },
+                activePoint.isRetired
+                  ? {
+                      label: "Withdrawn",
+                      value: formatMoney(activePoint.withdrawal),
+                      tone: "rent",
+                    }
+                  : {
+                      label: "Contributed",
+                      value: formatMoney(activePoint.contribution),
+                      tone: "buy",
+                    },
+              ]}
+              chart={{ width, height, pad }}
+            />
+          </>
+        ) : null}
       </svg>
       <div className="chart-legend">
         <span>

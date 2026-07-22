@@ -783,6 +783,84 @@ body::after {
    Reason: Editing a shared assumption now silently changes the other calculator, and the
            retirement housing line is computed rather than typed. Both need to be visible
            at the field, not just documented. */
+/* AI_CHANGE:
+   Tool: Claude Code
+   Model: Claude Opus 4.8
+   Timestamp: 2026-07-22T00:00:00-04:00
+   Purpose: Styles the chart hover crosshair, point markers and value tooltip.
+   Reason: The charts previously offered no way to read a value at a specific year or age —
+           only six y-axis reference ticks across the entire range. */
+.line-chart {
+  touch-action: none;
+}
+
+.line-chart:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.hover-crosshair {
+  stroke: #8d9aa1;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.hover-dot {
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.hover-dot.rent {
+  fill: var(--rent);
+}
+
+.hover-dot.buy {
+  fill: var(--buy);
+}
+
+.hover-dot.retirement {
+  fill: var(--retirement);
+}
+
+.tooltip-box {
+  fill: #1f2a33;
+  fill-opacity: 0.94;
+  stroke: rgb(255 255 255 / 18%);
+  stroke-width: 1;
+}
+
+.tooltip-text {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+.tooltip-title {
+  fill: #fff;
+  font-weight: 600;
+}
+
+.tooltip-label {
+  fill: #b9c6cd;
+}
+
+.tooltip-value {
+  fill: #fff;
+  font-weight: 600;
+}
+
+.tooltip-swatch.rent {
+  fill: var(--rent);
+}
+
+.tooltip-swatch.buy {
+  fill: var(--buy);
+}
+
+.tooltip-swatch.retirement {
+  fill: var(--retirement);
+}
+
 .field-badge {
   margin-left: 0.4rem;
   padding: 0.05rem 0.35rem;
