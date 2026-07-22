@@ -1,34 +1,79 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  computeMonthlyOwnerCostBreakdown,
   computeTotalMonthlyOwnerCost,
   formatMonthlyOwnerCost,
-  getMortgagePayment,
 } from "./lib/rentVsBuyOwnerCost";
+// AI_CHANGE:
+// Tool: Claude Code
+// Model: Claude Opus 4.8
+// Timestamp: 2026-07-22T00:00:00-04:00
+// Purpose: Sources the projection models and default inputs from plain modules in src/lib
+//          instead of defining them inline in this component file.
+// Reason: Keeps the math importable by `node --test`. The component tree below is now
+//         presentation-only, so a failing number can be traced to a specific lib module.
+import { clamp } from "./lib/finance";
+import {
+  LINKED_FIELDS,
+  LINKED_FIELD_NOTE,
+  describeDerivedHousing,
+  getDerivedMonthlyHousing,
+  getLinkedCounterpart,
+  isLinkedField,
+} from "./lib/linkedFields";
+import { calculateRentVsBuy } from "./lib/rentVsBuy";
+import { calculateRetirement } from "./lib/retirement";
+import {
+  DEFAULT_RENT_BUY_INPUTS,
+  DEFAULT_RETIREMENT_INPUTS,
+} from "./lib/defaults";
 
 const APP_MODE = {
+  HUB: "hub",
   RENT_BUY: "rent-buy",
   RETIREMENT: "retirement",
 };
 
-const DEFAULT_RENT_BUY_INPUTS = {
-  years: 30,
-  monthlyRent: 3300,
-  rentIncreasePct: 3,
-  rentersInsuranceMonthly: 22,
-  homePrice: 500000,
-  downPaymentPct: 20,
-  mortgageRatePct: 6.5,
-  loanTermYears: 30,
-  propertyTaxPct: 1.2,
-  homeInsuranceAnnual: 1800,
-  maintenancePct: 1,
-  hoaMonthly: 150,
-  closingCostPct: 3,
-  sellingCostPct: 6,
-  homeAppreciationPct: 3,
-  investmentReturnPct: 5,
-  annualInflationPct: 2,
-};
+function getInitialMode() {
+  if (typeof window === "undefined") {
+    return APP_MODE.HUB;
+  }
+
+  const mode = new URLSearchParams(window.location.search).get("mode");
+  return Object.values(APP_MODE).includes(mode) ? mode : APP_MODE.HUB;
+}
+
+const HUB_APPS = [
+  {
+    name: "Deb8",
+    category: "Discussion workspace",
+    description:
+      "Run structured debate sessions, weigh opposing arguments, and keep the conversation moving toward a clear decision.",
+    accent: "deb8",
+    actionLabel: "Open Deb8",
+    href: "https://gen-lang-client-0682789775.web.app",
+    isExternal: true,
+  },
+  {
+    name: "DC Map Layers",
+    category: "Geographic analysis",
+    description:
+      "Explore layered DC map data, filter spatial views, and compare neighborhood context from one interactive map surface.",
+    accent: "maps",
+    actionLabel: "Open Map Layers",
+    href: "https://bookmarker-9ac68.web.app",
+    isExternal: true,
+  },
+  {
+    name: "RentVsBuy",
+    category: "Financial calculators",
+    description:
+      "Compare housing choices and retirement readiness with editable assumptions, charts, and scenario breakdowns.",
+    accent: "rentbuy",
+    actionLabel: "Open RentVsBuy",
+    mode: APP_MODE.RENT_BUY,
+  },
+];
 
 const RENT_BUY_FIELD_GROUPS = [
   {
@@ -37,6 +82,7 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "years",
         label: "Comparison Horizon",
+        tooltip: "How many years to compare renting vs. buying. Longer horizons typically favor buying as equity accumulates.",
         suffix: "years",
         min: 1,
         max: 50,
@@ -57,12 +103,14 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "rentIncreasePct",
         label: "Annual Rent Increase",
+        tooltip: "Expected yearly rent hike. U.S. rents have historically risen 3–5% per year.",
         suffix: "%",
         step: 0.1,
       },
       {
         name: "rentersInsuranceMonthly",
         label: "Renter Insurance",
+        tooltip: "Monthly premium covering personal belongings and personal liability — typically $15–30/mo.",
         suffix: "$/mo",
         min: 0,
         step: 5,
@@ -82,6 +130,7 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "downPaymentPct",
         label: "Down Payment",
+        tooltip: "Percentage of purchase price paid upfront. Putting down 20% avoids private mortgage insurance (PMI).",
         suffix: "%",
         min: 0,
         max: 100,
@@ -105,6 +154,7 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "propertyTaxPct",
         label: "Property Tax",
+        tooltip: "Annual property tax as a percentage of home value. Rates vary by location — 0.5% to 2.5% is typical in the U.S.",
         suffix: "%/yr",
         min: 0,
         step: 0.1,
@@ -119,6 +169,7 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "maintenancePct",
         label: "Maintenance",
+        tooltip: "Annual repair and upkeep cost as a percentage of home value. The common '1% rule' is a starting point; older homes may cost more.",
         suffix: "%/yr",
         min: 0,
         step: 0.1,
@@ -126,6 +177,7 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "hoaMonthly",
         label: "HOA Fees",
+        tooltip: "Monthly Homeowners Association fee covering shared amenities, exterior maintenance, and community management. Enter 0 if not applicable.",
         suffix: "$/mo",
         min: 0,
         step: 25,
@@ -133,6 +185,7 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "closingCostPct",
         label: "Closing Costs",
+        tooltip: "One-time fees at purchase: lender origination, title insurance, escrow, and prepaid items. Typically 2–5% of the purchase price.",
         suffix: "% of price",
         min: 0,
         step: 0.25,
@@ -140,6 +193,7 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "sellingCostPct",
         label: "Selling Costs",
+        tooltip: "Costs to sell the home at the end of the horizon — mainly agent commissions. Typically 5–6% of sale price. Reduces net equity.",
         suffix: "% of value",
         min: 0,
         step: 0.25,
@@ -147,6 +201,7 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "homeAppreciationPct",
         label: "Home Appreciation",
+        tooltip: "Expected annual increase in the home's market value. Historically ~3–4% nationally, but varies widely by market and location.",
         suffix: "%/yr",
         step: 0.1,
       },
@@ -158,46 +213,20 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "investmentReturnPct",
         label: "Investment Return (Renter)",
+        tooltip: "Annual return on money a renter invests instead of tying up in a down payment and ongoing ownership costs.",
         suffix: "%/yr",
         step: 0.1,
       },
       {
         name: "annualInflationPct",
         label: "Inflation on Recurring Costs",
+        tooltip: "Annual rate at which ongoing costs like insurance, HOA, and maintenance grow over time.",
         suffix: "%/yr",
         step: 0.1,
       },
     ],
   },
 ];
-
-const DEFAULT_RETIREMENT_INPUTS = {
-  currentAge: 35,
-  retirementAge: 67,
-  lifeExpectancy: 92,
-  currentSavings: 120000,
-  annualContribution: 18000,
-  employerMatchAnnual: 5000,
-  contributionGrowthPct: 2,
-  preRetirementReturnPct: 7,
-  postRetirementReturnPct: 5,
-  investmentDragPct: 1,
-  monthlyHousing: 1800,
-  monthlyUtilities: 350,
-  monthlyFood: 700,
-  monthlyTransportation: 450,
-  monthlyHealthcare: 500,
-  monthlyLifestyle: 550,
-  monthlyTravel: 300,
-  monthlyOther: 300,
-  annualNonMonthlyExpenses: 6000,
-  socialSecurityAnnual: 32000,
-  pensionAnnual: 0,
-  benefitIncreasePct: 2,
-  inflationPct: 2.5,
-  retirementIncomeTaxPct: 12,
-  safeWithdrawalRatePct: 4,
-};
 
 const RETIREMENT_FIELD_GROUPS = [
   {
@@ -222,6 +251,7 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "lifeExpectancy",
         label: "Life Expectancy",
+        tooltip: "Planning horizon for your portfolio — how long it needs to last. Estimating conservatively (e.g. age 95) builds in a longevity buffer.",
         suffix: "years",
         min: 55,
         max: 110,
@@ -249,6 +279,7 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "employerMatchAnnual",
         label: "Employer Match",
+        tooltip: "Annual employer 401(k) match or other employer contributions added to your retirement accounts.",
         suffix: "$/yr",
         min: 0,
         step: 500,
@@ -256,24 +287,28 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "contributionGrowthPct",
         label: "Contribution Growth",
+        tooltip: "Annual rate at which your contributions increase each year — typically tied to expected salary growth.",
         suffix: "%/yr",
         step: 0.1,
       },
       {
         name: "preRetirementReturnPct",
         label: "Return Before Retirement",
+        tooltip: "Expected annual portfolio return during your working years, when a longer time horizon supports higher-growth investments.",
         suffix: "%/yr",
         step: 0.1,
       },
       {
         name: "postRetirementReturnPct",
         label: "Return During Retirement",
+        tooltip: "Expected annual return after you retire. Often lower due to a more conservative, income-focused asset allocation.",
         suffix: "%/yr",
         step: 0.1,
       },
       {
         name: "investmentDragPct",
         label: "Fees / Tax Drag",
+        tooltip: "Annual reduction in returns from fund expense ratios, advisor fees, and tax inefficiency. Even 1% compounds significantly over decades.",
         suffix: "%/yr",
         min: 0,
         step: 0.1,
@@ -286,6 +321,8 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "monthlyHousing",
         label: "Housing",
+        tooltip: "Monthly housing cost in today's dollars. Taken from the Rent vs Buy calculator so your housing decision flows into this plan — it follows whichever scenario that page favours.",
+        derived: true,
         suffix: "$/mo",
         min: 0,
         step: 50,
@@ -342,6 +379,7 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "annualNonMonthlyExpenses",
         label: "Annual Non-Monthly Costs",
+        tooltip: "Irregular annual expenses — car repairs, home maintenance, medical, travel — entered as a lump sum and spread across months.",
         suffix: "$/yr",
         min: 0,
         step: 250,
@@ -354,6 +392,7 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "socialSecurityAnnual",
         label: "Social Security at Retirement",
+        tooltip: "Estimated annual Social Security benefit at your planned retirement age. Check ssa.gov for your personalized estimate.",
         suffix: "$/yr",
         min: 0,
         step: 500,
@@ -361,6 +400,7 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "pensionAnnual",
         label: "Pension at Retirement",
+        tooltip: "Annual defined-benefit pension income starting at retirement. Enter 0 if you don't have a pension.",
         suffix: "$/yr",
         min: 0,
         step: 500,
@@ -368,18 +408,21 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "benefitIncreasePct",
         label: "Income COLA (SS + Pension)",
+        tooltip: "Cost-of-Living Adjustment — the annual percentage increase applied to Social Security and pension income throughout retirement.",
         suffix: "%/yr",
         step: 0.1,
       },
       {
         name: "inflationPct",
         label: "Inflation",
+        tooltip: "Expected annual inflation rate used to grow your planned retirement expenses over time.",
         suffix: "%/yr",
         step: 0.1,
       },
       {
         name: "retirementIncomeTaxPct",
         label: "Retirement Income Tax Rate",
+        tooltip: "Effective tax rate on retirement income withdrawals — reduces the net spending power of each dollar taken from the portfolio.",
         suffix: "%",
         min: 0,
         max: 95,
@@ -388,6 +431,7 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "safeWithdrawalRatePct",
         label: "Safe Withdrawal Rule",
+        tooltip: "Percentage of your portfolio withdrawn annually in retirement. The '4% rule' is a widely cited benchmark for a 30-year retirement.",
         suffix: "%",
         min: 0.5,
         max: 15,
@@ -410,394 +454,94 @@ const compactMoneyFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1,
 });
 
-function asNumber(value, fallback = 0) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function annualToMonthlyRate(ratePct) {
-  const boundedRate = clamp(asNumber(ratePct, 0), -99, 1000) / 100;
-  return Math.pow(1 + boundedRate, 1 / 12) - 1;
-}
-
-function annualRateMultiplier(ratePct) {
-  return 1 + asNumber(ratePct, 0) / 100;
-}
-
-function calculateRentVsBuy(inputs) {
-  const years = clamp(Math.round(asNumber(inputs.years, 10)), 1, 50);
-  const monthlyRentStart = Math.max(asNumber(inputs.monthlyRent, 0), 0);
-  const rentIncreasePct = asNumber(inputs.rentIncreasePct, 0);
-  const rentersInsuranceStart = Math.max(
-    asNumber(inputs.rentersInsuranceMonthly, 0),
-    0,
-  );
-  const homePrice = Math.max(asNumber(inputs.homePrice, 0), 0);
-  const downPaymentRate = clamp(asNumber(inputs.downPaymentPct, 0), 0, 100) / 100;
-  const mortgageRatePct = Math.max(asNumber(inputs.mortgageRatePct, 0), 0);
-  const loanTermYears = clamp(Math.round(asNumber(inputs.loanTermYears, 30)), 1, 40);
-  const propertyTaxRate = Math.max(asNumber(inputs.propertyTaxPct, 0), 0) / 100;
-  const homeInsuranceAnnualStart = Math.max(
-    asNumber(inputs.homeInsuranceAnnual, 0),
-    0,
-  );
-  const maintenanceRate = Math.max(asNumber(inputs.maintenancePct, 0), 0) / 100;
-  const hoaStart = Math.max(asNumber(inputs.hoaMonthly, 0), 0);
-  const closingCostRate = Math.max(asNumber(inputs.closingCostPct, 0), 0) / 100;
-  const sellingCostRate = clamp(asNumber(inputs.sellingCostPct, 0), 0, 100) / 100;
-  const appreciationPct = asNumber(inputs.homeAppreciationPct, 0);
-  const investmentReturnPct = asNumber(inputs.investmentReturnPct, 0);
-  const inflationPct = asNumber(inputs.annualInflationPct, 0);
-
-  const downPayment = homePrice * downPaymentRate;
-  const closingCosts = homePrice * closingCostRate;
-  const mortgagePrincipal = homePrice - downPayment;
-  const monthlyMortgagePayment = getMortgagePayment(
-    mortgagePrincipal,
-    mortgageRatePct,
-    loanTermYears,
-  );
-  const mortgageMonths = loanTermYears * 12;
-  const monthlyMortgageRate = mortgageRatePct / 100 / 12;
-
-  const monthlyRentGrowth = annualToMonthlyRate(rentIncreasePct);
-  const monthlyHomeGrowth = annualToMonthlyRate(appreciationPct);
-  const monthlyInvestmentGrowth = annualToMonthlyRate(investmentReturnPct);
-  const monthlyInflation = annualToMonthlyRate(inflationPct);
-
-  let rent = monthlyRentStart;
-  let rentersInsurance = rentersInsuranceStart;
-  let homeInsurance = homeInsuranceAnnualStart / 12;
-  let hoa = hoaStart;
-  let homeValue = homePrice;
-  let remainingBalance = mortgagePrincipal;
-
-  let ownerOutflow = downPayment + closingCosts;
-  let renterOutflow = 0;
-  let renterInvestment = downPayment + closingCosts;
-
-  const timeline = [];
-  let breakEvenYear = null;
-
-  for (let month = 1; month <= years * 12; month += 1) {
-    if (month > 1) {
-      rent *= 1 + monthlyRentGrowth;
-      rentersInsurance *= 1 + monthlyInflation;
-      homeInsurance *= 1 + monthlyInflation;
-      hoa *= 1 + monthlyInflation;
-      homeValue *= 1 + monthlyHomeGrowth;
-    }
-
-    renterInvestment *= 1 + monthlyInvestmentGrowth;
-
-    let mortgagePaymentThisMonth = 0;
-    if (month <= mortgageMonths && remainingBalance > 0.01) {
-      const interestPaid = remainingBalance * monthlyMortgageRate;
-      let principalPaid = Math.max(monthlyMortgagePayment - interestPaid, 0);
-
-      if (principalPaid > remainingBalance) {
-        principalPaid = remainingBalance;
-      }
-
-      mortgagePaymentThisMonth = interestPaid + principalPaid;
-      remainingBalance -= principalPaid;
-    }
-
-    const propertyTaxThisMonth = (homeValue * propertyTaxRate) / 12;
-    const maintenanceThisMonth = (homeValue * maintenanceRate) / 12;
-
-    const ownerMonthlyCost =
-      mortgagePaymentThisMonth +
-      propertyTaxThisMonth +
-      maintenanceThisMonth +
-      homeInsurance +
-      hoa;
-    const renterMonthlyCost = rent + rentersInsurance;
-
-    ownerOutflow += ownerMonthlyCost;
-    renterOutflow += renterMonthlyCost;
-
-    renterInvestment += ownerMonthlyCost - renterMonthlyCost;
-
-    const ownerEquity = homeValue * (1 - sellingCostRate) - remainingBalance;
-    const ownerNetCost = ownerOutflow - ownerEquity;
-    const renterNetCost = renterOutflow - renterInvestment;
-
-    if (breakEvenYear === null && ownerNetCost <= renterNetCost) {
-      breakEvenYear = month / 12;
-    }
-
-    if (month % 12 === 0) {
-      timeline.push({
-        year: month / 12,
-        ownerNetCost,
-        renterNetCost,
-        ownerOutflow,
-        renterOutflow,
-        ownerEquity,
-        renterInvestment,
-      });
-    }
-  }
-
-  const finalYear = timeline[timeline.length - 1];
-  const costDifference = finalYear.renterNetCost - finalYear.ownerNetCost;
-  const winner =
-    costDifference > 0
-      ? "buy"
-      : costDifference < 0
-        ? "rent"
-        : "tie";
-
-  return {
-    assumptions: {
-      years,
-      monthlyMortgagePayment,
-    },
-    timeline,
-    summary: {
-      winner,
-      breakEvenYear,
-      costDifference,
-      ownerNetCost: finalYear.ownerNetCost,
-      renterNetCost: finalYear.renterNetCost,
-      ownerOutflow: finalYear.ownerOutflow,
-      renterOutflow: finalYear.renterOutflow,
-      ownerEquity: finalYear.ownerEquity,
-      renterInvestment: finalYear.renterInvestment,
-    },
-  };
-}
-
-function calculateRetirement(inputs) {
-  const currentAge = clamp(Math.round(asNumber(inputs.currentAge, 35)), 18, 90);
-  const retirementAgeInput = clamp(Math.round(asNumber(inputs.retirementAge, 67)), 40, 95);
-  const retirementAge = Math.max(retirementAgeInput, currentAge + 1);
-  const lifeExpectancyInput = clamp(
-    Math.round(asNumber(inputs.lifeExpectancy, 92)),
-    55,
-    110,
-  );
-  const lifeExpectancy = Math.max(lifeExpectancyInput, retirementAge + 1);
-
-  const currentSavings = Math.max(asNumber(inputs.currentSavings, 0), 0);
-  const annualContributionStart = Math.max(asNumber(inputs.annualContribution, 0), 0);
-  const employerMatchStart = Math.max(asNumber(inputs.employerMatchAnnual, 0), 0);
-  const contributionGrowthPct = asNumber(inputs.contributionGrowthPct, 0);
-  const preRetirementReturnPct = asNumber(inputs.preRetirementReturnPct, 0);
-  const postRetirementReturnPct = asNumber(inputs.postRetirementReturnPct, 0);
-  const investmentDragPct = Math.max(asNumber(inputs.investmentDragPct, 0), 0);
-  const inflationPct = asNumber(inputs.inflationPct, 0);
-  const monthlyHousing = Math.max(asNumber(inputs.monthlyHousing, 0), 0);
-  const monthlyUtilities = Math.max(asNumber(inputs.monthlyUtilities, 0), 0);
-  const monthlyFood = Math.max(asNumber(inputs.monthlyFood, 0), 0);
-  const monthlyTransportation = Math.max(asNumber(inputs.monthlyTransportation, 0), 0);
-  const monthlyHealthcare = Math.max(asNumber(inputs.monthlyHealthcare, 0), 0);
-  const monthlyLifestyle = Math.max(asNumber(inputs.monthlyLifestyle, 0), 0);
-  const monthlyTravel = Math.max(asNumber(inputs.monthlyTravel, 0), 0);
-  const monthlyOther = Math.max(asNumber(inputs.monthlyOther, 0), 0);
-  const annualNonMonthlyExpenses = Math.max(
-    asNumber(inputs.annualNonMonthlyExpenses, 0),
-    0,
-  );
-  const socialSecurityStart = Math.max(asNumber(inputs.socialSecurityAnnual, 0), 0);
-  const pensionStart = Math.max(asNumber(inputs.pensionAnnual, 0), 0);
-  const benefitIncreasePct = asNumber(inputs.benefitIncreasePct, 0);
-  const retirementIncomeTaxRate =
-    clamp(asNumber(inputs.retirementIncomeTaxPct, 12), 0, 95) / 100;
-  const safeWithdrawalRate =
-    clamp(asNumber(inputs.safeWithdrawalRatePct, 4), 0.5, 15) / 100;
-
-  const yearsToRetirement = retirementAge - currentAge;
-  const yearsTotal = lifeExpectancy - currentAge;
-  const contributionGrowth = annualRateMultiplier(contributionGrowthPct);
-  const inflationGrowth = annualRateMultiplier(inflationPct);
-  const benefitsGrowth = annualRateMultiplier(benefitIncreasePct);
-  const inflationToRetirement = Math.pow(inflationGrowth, yearsToRetirement);
-
-  const monthlyExpenseRows = [
-    { label: "Housing", today: monthlyHousing },
-    { label: "Utilities", today: monthlyUtilities },
-    { label: "Food & Groceries", today: monthlyFood },
-    { label: "Transportation", today: monthlyTransportation },
-    { label: "Healthcare", today: monthlyHealthcare },
-    { label: "Lifestyle", today: monthlyLifestyle },
-    { label: "Travel", today: monthlyTravel },
-    { label: "Other", today: monthlyOther },
-    {
-      label: "Non-Monthly Costs (Avg)",
-      today: annualNonMonthlyExpenses / 12,
-    },
-  ];
-  const plannedMonthlySpendToday = monthlyExpenseRows.reduce(
-    (total, row) => total + row.today,
-    0,
-  );
-  const annualSpendingToday = plannedMonthlySpendToday * 12;
-
-  let balance = currentSavings;
-  let annualContribution = annualContributionStart;
-  let annualMatch = employerMatchStart;
-  let socialSecurity = socialSecurityStart;
-  let pension = pensionStart;
-  const firstYearRetirementSpending = annualSpendingToday * inflationToRetirement;
-  let retirementSpending = firstYearRetirementSpending;
-
-  let cumulativeContributions = 0;
-  let cumulativeWithdrawals = 0;
-  let runOutAge = null;
-
-  const firstYearNetGap = Math.max(
-    firstYearRetirementSpending - socialSecurity - pension,
-    0,
-  );
-  const firstYearGrossWithdrawalNeed =
-    firstYearNetGap / Math.max(1 - retirementIncomeTaxRate, 0.01);
-  const requiredNestEgg = firstYearGrossWithdrawalNeed / safeWithdrawalRate;
-  const timeline = [];
-
-  let balanceAtRetirement = currentSavings;
-
-  for (let yearOffset = 0; yearOffset <= yearsTotal; yearOffset += 1) {
-    const age = currentAge + yearOffset;
-    const isRetired = age >= retirementAge;
-    const grossReturnRate = isRetired ? postRetirementReturnPct : preRetirementReturnPct;
-    const netReturnRate = grossReturnRate - investmentDragPct;
-
-    balance *= annualRateMultiplier(netReturnRate);
-
-    let contributionThisYear = 0;
-    let withdrawalThisYear = 0;
-    let incomeThisYear = 0;
-    let spendingThisYear = 0;
-
-    if (!isRetired) {
-      contributionThisYear = annualContribution + annualMatch;
-      balance += contributionThisYear;
-      cumulativeContributions += contributionThisYear;
-
-      if (age + 1 === retirementAge) {
-        balanceAtRetirement = balance;
-      }
-
-      annualContribution *= contributionGrowth;
-      annualMatch *= contributionGrowth;
-    } else {
-      spendingThisYear = retirementSpending;
-      incomeThisYear = socialSecurity + pension;
-
-      const shortfall = spendingThisYear - incomeThisYear;
-      if (shortfall > 0) {
-        const grossWithdrawal = shortfall / Math.max(1 - retirementIncomeTaxRate, 0.01);
-        withdrawalThisYear = grossWithdrawal;
-        balance -= grossWithdrawal;
-        cumulativeWithdrawals += grossWithdrawal;
-      } else if (shortfall < 0) {
-        contributionThisYear = Math.abs(shortfall);
-        balance += contributionThisYear;
-        cumulativeContributions += contributionThisYear;
-      }
-
-      retirementSpending *= inflationGrowth;
-      socialSecurity *= benefitsGrowth;
-      pension *= benefitsGrowth;
-
-      if (runOutAge === null && balance <= 0) {
-        runOutAge = age;
-      }
-    }
-
-    timeline.push({
-      age,
-      isRetired,
-      balance,
-      contribution: contributionThisYear,
-      withdrawal: withdrawalThisYear,
-      retirementIncome: incomeThisYear,
-      retirementSpending: spendingThisYear,
-    });
-  }
-
-  const finalBalance = timeline[timeline.length - 1].balance;
-  const targetGap = requiredNestEgg - balanceAtRetirement;
-  const retireReady = targetGap <= 0;
-  const plannedMonthlySpendAtRetirement = firstYearRetirementSpending / 12;
-  const sustainableGrossWithdrawal = balanceAtRetirement * safeWithdrawalRate;
-  const sustainableNetPortfolioSpend =
-    sustainableGrossWithdrawal * (1 - retirementIncomeTaxRate);
-  const sustainableAnnualSpend =
-    socialSecurityStart + pensionStart + sustainableNetPortfolioSpend;
-  const sustainableMonthlySpend = sustainableAnnualSpend / 12;
-  const monthlyBudgetDelta = sustainableMonthlySpend - plannedMonthlySpendAtRetirement;
-  const monthlyGapAtRetirement = firstYearNetGap / 12;
-  const monthlyBudgetRows = monthlyExpenseRows.map((row) => ({
-    label: row.label,
-    today: row.today,
-    atRetirement: row.today * inflationToRetirement,
-  }));
-
-  return {
-    assumptions: {
-      currentAge,
-      retirementAge,
-      lifeExpectancy,
-      yearsToRetirement,
-      safeWithdrawalRate,
-    },
-    timeline,
-    summary: {
-      balanceAtRetirement,
-      requiredNestEgg,
-      finalBalance,
-      targetGap,
-      retireReady,
-      runOutAge,
-      cumulativeContributions,
-      cumulativeWithdrawals,
-      monthlyGapAtRetirement,
-      firstYearGap: firstYearNetGap,
-      plannedMonthlySpendToday,
-      plannedMonthlySpendAtRetirement,
-      sustainableMonthlySpend,
-      sustainableAnnualSpend,
-      monthlyBudgetDelta,
-      monthlyBudgetRows,
-      annualSpendingToday,
-    },
-  };
-}
-
 function formatMoney(value) {
   return moneyFormatter.format(value);
+}
+
+// AI_CHANGE:
+// Tool: Claude Code
+// Model: Claude Opus 4.8
+// Timestamp: 2026-07-22T00:00:00-04:00
+// Purpose: Picks which timeline indices get an x-axis label, dropping the second-to-last
+//          tick when the mandatory final tick would sit on top of it.
+// Reason: Both line charts labelled every Nth point plus the last point unconditionally.
+//         On a 35-92 retirement span that rendered ages 91 and 92 at nearly the same x,
+//         printing as an unreadable "9192"; the rent-vs-buy chart collided "Y29"/"Y30" the
+//         same way. Shared by both charts so they stay consistent.
+function getXLabelIndices(length) {
+  const interval = Math.max(Math.ceil(length / 8), 1);
+  const indices = [];
+
+  for (let index = 0; index < length; index += interval) {
+    indices.push(index);
+  }
+
+  const last = length - 1;
+  if (indices[indices.length - 1] !== last) {
+    if (last - indices[indices.length - 1] < interval / 2) {
+      indices.pop();
+    }
+    indices.push(last);
+  }
+
+  return indices;
 }
 
 function formatCompactMoney(value) {
   return compactMoneyFormatter.format(value);
 }
 
-function NumberField({ field, value, onChange, idPrefix }) {
+function Tooltip({ text }) {
+  return (
+    <span className="tooltip-anchor" tabIndex={0}>
+      <span className="tooltip-icon" aria-hidden="true">i</span>
+      <span className="tooltip-bubble" role="tooltip">{text}</span>
+    </span>
+  );
+}
+
+// AI_CHANGE:
+// Tool: Claude Code
+// Model: Claude Opus 4.8
+// Timestamp: 2026-07-22T00:00:00-04:00
+// Purpose: Marks fields that are shared with the other calculator, and renders derived
+//          fields as read-only with an explanation of where their value comes from.
+// Reason: A field that silently changes a value on another page is confusing unless the
+//         link is visible, and the retirement housing line is now an output of the
+//         rent-vs-buy comparison rather than something to type into.
+function NumberField({ field, value, onChange, idPrefix, page, note: noteOverride }) {
   const inputId = `${idPrefix}-${field.name}`;
+  const linked = page ? isLinkedField(page, field.name) : false;
+  const note = noteOverride ?? (linked ? LINKED_FIELD_NOTE : null);
 
   return (
     <label className="field" htmlFor={inputId}>
-      <span className="field-label">{field.label}</span>
+      <span className="field-label">
+        {field.label}
+        {field.tooltip ? <Tooltip text={field.tooltip} /> : null}
+        {linked ? <span className="field-badge">linked</span> : null}
+        {field.derived ? <span className="field-badge">derived</span> : null}
+      </span>
       <div className="field-input-wrap">
         <input
           id={inputId}
           className="field-input"
           type="number"
-          value={value}
+          value={field.derived ? Math.round(Number(value) || 0) : value}
           min={field.min}
           max={field.max}
           step={field.step ?? 1}
+          readOnly={Boolean(field.derived)}
+          aria-describedby={note ? `${inputId}-note` : undefined}
           onChange={(event) => onChange(field.name, event.target.value)}
         />
         {field.suffix ? <span className="field-suffix">{field.suffix}</span> : null}
       </div>
+      {note ? (
+        <small className="field-note" id={`${inputId}-note`}>
+          {note}
+        </small>
+      ) : null}
     </label>
   );
 }
@@ -810,6 +554,8 @@ function CollapsibleInputGroup({
   isExpanded,
   onToggle,
   onFieldChange,
+  page,
+  fieldNotes,
 }) {
   const contentId = `${idPrefix}-group-${groupIndex}-content`;
 
@@ -833,6 +579,8 @@ function CollapsibleInputGroup({
               field={field}
               value={inputs[field.name]}
               idPrefix={idPrefix}
+              page={page}
+              note={fieldNotes?.[field.name]}
               onChange={onFieldChange}
             />
           ))}
@@ -842,7 +590,7 @@ function CollapsibleInputGroup({
   );
 }
 
-function PageHeader({ title, description, toggleLabel, onToggle }) {
+function PageHeader({ title, description, toggleLabel, onToggle, onHome }) {
   return (
     <header className="hero">
       <div className="hero-top">
@@ -851,15 +599,96 @@ function PageHeader({ title, description, toggleLabel, onToggle }) {
           <h1>{title}</h1>
           <p>{description}</p>
         </div>
-        <button className="mode-toggle" onClick={onToggle}>
-          {toggleLabel}
-        </button>
+        <div className="hero-actions">
+          {onHome ? (
+            <button className="mode-toggle mode-toggle-secondary" onClick={onHome}>
+              App Hub
+            </button>
+          ) : null}
+          <button className="mode-toggle" onClick={onToggle}>
+            {toggleLabel}
+          </button>
+        </div>
       </div>
     </header>
   );
 }
 
-function RentVsBuyChart({ timeline }) {
+function HubPreview({ accent }) {
+  return (
+    <div className={`hub-preview ${accent}`} aria-hidden="true">
+      {accent === "deb8" ? (
+        <>
+          <span className="debate-pill debate-pill-a" />
+          <span className="debate-pill debate-pill-b" />
+          <span className="debate-score debate-score-left" />
+          <span className="debate-score debate-score-right" />
+        </>
+      ) : null}
+      {accent === "maps" ? (
+        <>
+          <span className="map-block map-block-a" />
+          <span className="map-block map-block-b" />
+          <span className="map-route" />
+          <span className="map-pin" />
+        </>
+      ) : null}
+      {accent === "rentbuy" ? (
+        <>
+          <span className="chart-column chart-column-a" />
+          <span className="chart-column chart-column-b" />
+          <span className="chart-column chart-column-c" />
+          <span className="chart-line-preview" />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function AppHub({ onSelectApp }) {
+  return (
+    <div className="page hub-page">
+      <header className="hub-hero">
+        <div>
+          <p className="eyebrow">Personal App Hub</p>
+          <h1>One place for your working tools.</h1>
+          <p>
+            Jump into debate, map analysis, or financial planning without hunting
+            through repo folders and dev servers.
+          </p>
+        </div>
+      </header>
+
+      <main className="hub-grid" aria-label="App launcher">
+        {HUB_APPS.map((app) => (
+          <article className={`app-card app-card-${app.accent}`} key={app.name}>
+            <HubPreview accent={app.accent} />
+            <div className="app-card-body">
+              <p className="app-category">{app.category}</p>
+              <h2>{app.name}</h2>
+              <p>{app.description}</p>
+            </div>
+            {app.isExternal ? (
+              <a className="app-link" href={app.href}>
+                {app.actionLabel}
+              </a>
+            ) : (
+              <button
+                className="app-link app-link-button"
+                type="button"
+                onClick={() => onSelectApp(app.mode)}
+              >
+                {app.actionLabel}
+              </button>
+            )}
+          </article>
+        ))}
+      </main>
+    </div>
+  );
+}
+
+function RentVsBuyChart({ timeline, breakEvenYear }) {
   if (!timeline.length) return null;
 
   const width = 760;
@@ -893,12 +722,30 @@ function RentVsBuyChart({ timeline }) {
     };
   });
 
-  const xLabelInterval = Math.max(Math.ceil(timeline.length / 8), 1);
+  const xLabelIndices = getXLabelIndices(timeline.length);
+  // AI_CHANGE:
+  // Tool: Claude Code
+  // Model: Claude Opus 4.8
+  // Timestamp: 2026-07-22T00:00:00-04:00
+  // Purpose: Draws a zero baseline whenever the plotted range straddles zero, and marks the
+  //          break-even year the app already calculates.
+  // Reason: Net cost is routinely negative (a renter with strong investment returns ends up
+  //         ahead), but with no zero rule there was nothing to tell "costs you $200k" from
+  //         "nets you $200k" at a glance. And break-even was stated in prose while the chart
+  //         left the crossing unmarked, so the number could not be located on the plot.
+  const zeroY = minValue < 0 && maxValue > 0 ? getY(0) : null;
+  const breakEvenX =
+    breakEvenYear !== null && breakEvenYear !== undefined && timeline.length > 1
+      ? getX(clamp(breakEvenYear - 1, 0, timeline.length - 1))
+      : null;
 
   return (
     <div className="chart-card">
       <div className="chart-header">
-        <h3>Net Cost Over Time</h3>
+        <h3>
+          Net Cost Over Time
+          <Tooltip text="Tracks cumulative net cost — total cash paid minus current asset values — for renting vs. buying at each year of the horizon." />
+        </h3>
         <p>Net cost = total cash outflows minus current assets.</p>
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} className="line-chart" role="img">
@@ -916,10 +763,38 @@ function RentVsBuyChart({ timeline }) {
             </text>
           </g>
         ))}
+        {zeroY !== null ? (
+          <line
+            x1={pad.left}
+            y1={zeroY}
+            x2={width - pad.right}
+            y2={zeroY}
+            className="zero-line"
+          />
+        ) : null}
+        {breakEvenX !== null ? (
+          <g>
+            <line
+              x1={breakEvenX}
+              y1={pad.top}
+              x2={breakEvenX}
+              y2={height - pad.bottom}
+              className="retirement-marker"
+            />
+            <text
+              x={breakEvenX}
+              y={pad.top - 4}
+              textAnchor="middle"
+              className="axis-label"
+            >
+              Break-even
+            </text>
+          </g>
+        ) : null}
         <polyline points={rentPolyline} className="line rent-line" />
         <polyline points={buyPolyline} className="line buy-line" />
-        {timeline.map((point, index) => {
-          if (index % xLabelInterval !== 0 && index !== timeline.length - 1) return null;
+        {xLabelIndices.map((index) => {
+          const point = timeline[index];
           const x = getX(index);
           return (
             <g key={point.year}>
@@ -951,6 +826,38 @@ function RentVsBuyChart({ timeline }) {
   );
 }
 
+// AI_CHANGE:
+// Tool: Claude Code
+// Model: Claude Opus 4.8
+// Timestamp: 2026-07-22T00:00:00-04:00
+// Purpose: Renders the scenario bars on a signed scale anchored at zero, and adds a
+//          rent-paid row now that total cash paid is identical across scenarios.
+// Reason: Bar width was `Math.abs(value) / max`, so a net cost of -$895,481 (the renter
+//         ending $895k ahead) drew a bar 31.8% wide while +$565,037 for the buyer drew
+//         20.1% — the better outcome looked worse, directly contradicting the headline
+//         above it. Bars now grow left from a zero rule when the value is negative, so
+//         sign is visible and lengths stay comparable.
+function BreakdownBar({ value, domainMin, domainMax, tone }) {
+  const span = domainMax - domainMin || 1;
+  const zeroOffset = ((0 - domainMin) / span) * 100;
+  const valueOffset = ((value - domainMin) / span) * 100;
+  const left = Math.min(zeroOffset, valueOffset);
+  // Keep a hairline visible for small non-zero amounts so they don't disappear, but let an
+  // exact zero render as nothing — a stub bar next to "$0" reads as a rounding artifact.
+  const rawWidth = Math.abs(valueOffset - zeroOffset);
+  const width = value === 0 ? 0 : Math.max(rawWidth, 0.4);
+
+  return (
+    <div className="bar-track">
+      <span className="bar-zero" style={{ left: `${zeroOffset}%` }} />
+      <div
+        className={`bar ${tone}${value < 0 ? " bar-negative" : ""}`}
+        style={{ left: `${left}%`, width: `${width}%` }}
+      />
+    </div>
+  );
+}
+
 function RentVsBuyBreakdown({ summary, years }) {
   const rows = [
     {
@@ -959,9 +866,14 @@ function RentVsBuyBreakdown({ summary, years }) {
       buyValue: summary.ownerNetCost,
     },
     {
-      label: "Total cash paid",
+      label: "Total cash committed",
       rentValue: summary.renterOutflow,
       buyValue: summary.ownerOutflow,
+    },
+    {
+      label: "Rent paid to landlord",
+      rentValue: summary.renterRentPaid,
+      buyValue: 0,
     },
     {
       label: "Asset value at end",
@@ -970,16 +882,21 @@ function RentVsBuyBreakdown({ summary, years }) {
     },
   ];
 
-  const maxValue = Math.max(
-    ...rows.flatMap((row) => [Math.abs(row.rentValue), Math.abs(row.buyValue)]),
-    1,
-  );
+  const allValues = rows.flatMap((row) => [row.rentValue, row.buyValue]);
+  const domainMax = Math.max(...allValues, 0) || 1;
+  const domainMin = Math.min(...allValues, 0);
 
   return (
     <div className="chart-card">
       <div className="chart-header">
-        <h3>Scenario Breakdown</h3>
-        <p>Absolute bar length reflects amount in each category.</p>
+        <h3>
+          Scenario Breakdown
+          <Tooltip text="Side-by-side comparison of cash committed and final asset values for each scenario at the end of your comparison horizon. Both scenarios commit the same cash while the renter's portfolio holds out — the difference is what each one owns at the end." />
+        </h3>
+        <p>
+          Bars share one scale anchored at zero; bars extending left of the zero rule are
+          negative (money ahead rather than spent).
+        </p>
       </div>
       <div className="breakdown-grid">
         {rows.map((row) => (
@@ -989,18 +906,18 @@ function RentVsBuyBreakdown({ summary, years }) {
               <span>Rent {formatMoney(row.rentValue)}</span>
               <span>Buy {formatMoney(row.buyValue)}</span>
             </div>
-            <div className="bar-track">
-              <div
-                className="bar rent"
-                style={{ width: `${(Math.abs(row.rentValue) / maxValue) * 100}%` }}
-              />
-            </div>
-            <div className="bar-track">
-              <div
-                className="bar buy"
-                style={{ width: `${(Math.abs(row.buyValue) / maxValue) * 100}%` }}
-              />
-            </div>
+            <BreakdownBar
+              value={row.rentValue}
+              domainMin={domainMin}
+              domainMax={domainMax}
+              tone="rent"
+            />
+            <BreakdownBar
+              value={row.buyValue}
+              domainMin={domainMin}
+              domainMax={domainMax}
+              tone="buy"
+            />
           </div>
         ))}
       </div>
@@ -1039,14 +956,18 @@ function RetirementBalanceChart({ timeline, retirementAge }) {
     };
   });
 
-  const xLabelInterval = Math.max(Math.ceil(timeline.length / 8), 1);
+  const xLabelIndices = getXLabelIndices(timeline.length);
+  const zeroY = minValue < 0 && maxValue > 0 ? getY(0) : null;
   const retirementIndex = timeline.findIndex((point) => point.age === retirementAge);
   const retirementX = retirementIndex >= 0 ? getX(retirementIndex) : null;
 
   return (
     <div className="chart-card">
       <div className="chart-header">
-        <h3>Portfolio Balance By Age</h3>
+        <h3>
+          Portfolio Balance By Age
+          <Tooltip text="Shows how your portfolio grows during working years and draws down through retirement, accounting for contributions, returns, withdrawals, and taxes." />
+        </h3>
         <p>Includes contributions, growth, withdrawals, inflation, and taxes.</p>
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} className="line-chart" role="img">
@@ -1083,9 +1004,18 @@ function RetirementBalanceChart({ timeline, retirementAge }) {
             </text>
           </g>
         ) : null}
+        {zeroY !== null ? (
+          <line
+            x1={pad.left}
+            y1={zeroY}
+            x2={width - pad.right}
+            y2={zeroY}
+            className="zero-line"
+          />
+        ) : null}
         <polyline points={polyline} className="line retirement-line" />
-        {timeline.map((point, index) => {
-          if (index % xLabelInterval !== 0 && index !== timeline.length - 1) return null;
+        {xLabelIndices.map((index) => {
+          const point = timeline[index];
           const x = getX(index);
           return (
             <g key={point.age}>
@@ -1113,27 +1043,56 @@ function RetirementBalanceChart({ timeline, retirementAge }) {
   );
 }
 
+// AI_CHANGE:
+// Tool: Claude Code
+// Model: Claude Opus 4.8
+// Timestamp: 2026-07-22T00:00:00-04:00
+// Purpose: Splits the retirement breakdown into portfolio balances and annual cash flows,
+//          each scaled against its own group, and reuses the signed BreakdownBar.
+// Reason: Balances (~$3.4M) and annual spending (~$144k) shared one bar scale, so both
+//         spending rows rendered ~3% wide and conveyed nothing — the reader could not
+//         compare planned vs sustainable spend, which is the whole point of those rows.
+//         They are also different units: a stock of money versus a yearly flow, which
+//         should never share an axis.
+function RetirementBreakdownGroup({ caption, rows }) {
+  const values = rows.map((row) => row.value);
+  const domainMax = Math.max(...values, 0) || 1;
+  const domainMin = Math.min(...values, 0);
+
+  return (
+    <div className="breakdown-group">
+      <p className="breakdown-group-caption">{caption}</p>
+      <div className="breakdown-grid">
+        {rows.map((row) => (
+          <div key={row.label} className="breakdown-row">
+            <div className="breakdown-values">
+              <span>{row.label}</span>
+              <span>{formatMoney(row.value)}</span>
+            </div>
+            <BreakdownBar
+              value={row.value}
+              domainMin={domainMin}
+              domainMax={domainMax}
+              tone={row.color}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RetirementBreakdown({ summary }) {
-  const rows = [
+  const balanceRows = [
     {
       label: "Balance At Retirement",
       value: summary.balanceAtRetirement,
       color: "retirement",
     },
     {
-      label: "Target Nest Egg",
+      label: "Withdrawal-Rule Target",
       value: summary.requiredNestEgg,
       color: "target",
-    },
-    {
-      label: "Planned Annual Spend At Retirement",
-      value: summary.plannedMonthlySpendAtRetirement * 12,
-      color: "target",
-    },
-    {
-      label: "Sustainable Annual Spend",
-      value: summary.sustainableAnnualSpend,
-      color: "retirement",
     },
     {
       label: "Projected End Balance",
@@ -1152,62 +1111,98 @@ function RetirementBreakdown({ summary }) {
     },
   ];
 
-  const maxValue = Math.max(...rows.map((row) => Math.abs(row.value)), 1);
+  const flowRows = [
+    {
+      label: "Planned Annual Spend At Retirement",
+      value: summary.plannedMonthlySpendAtRetirement * 12,
+      color: "target",
+    },
+    {
+      label: "Sustainable Annual Spend",
+      value: summary.sustainableAnnualSpend,
+      color: "retirement",
+    },
+  ];
 
   return (
     <div className="chart-card">
       <div className="chart-header">
-        <h3>Retirement Breakdown</h3>
-        <p>Bars compare your target, savings progress, and retirement cashflow.</p>
+        <h3>
+          Retirement Breakdown
+          <Tooltip text="Key metrics at a glance: your savings target, projected balance, sustainable spending, and cumulative contribution and withdrawal totals." />
+        </h3>
+        <p>
+          Portfolio balances and annual cash flows are scaled separately — they are
+          different units and do not belong on a shared axis.
+        </p>
       </div>
-      <div className="breakdown-grid">
-        {rows.map((row) => (
-          <div key={row.label} className="breakdown-row">
-            <div className="breakdown-values">
-              <span>{row.label}</span>
-              <span>{formatMoney(row.value)}</span>
-            </div>
-            <div className="bar-track">
-              <div
-                className={`bar ${row.color}`}
-                style={{ width: `${(Math.abs(row.value) / maxValue) * 100}%` }}
-              />
-            </div>
-          </div>
-        ))}
-      </div>
+      <RetirementBreakdownGroup caption="Portfolio balances" rows={balanceRows} />
+      <RetirementBreakdownGroup caption="Annual cash flow" rows={flowRows} />
     </div>
   );
 }
 
-function RetirementMonthlyBudget({ summary }) {
+// AI_CHANGE:
+// Tool: Claude Code
+// Model: Claude Opus 4.8
+// Timestamp: 2026-07-22T00:00:00-04:00
+// Purpose: Presents sustainable spending as a whole-retirement figure solved from the
+//          projection, and shows today's-dollar equivalents beside the nominal amounts.
+// Reason: The old card compared planned spend against a first-year safe-withdrawal estimate
+//         and called the difference a cushion, while claiming in its tooltip that the number
+//         would not deplete your savings. It also stated everything in retirement-year
+//         dollars directly above a table whose "Today" column was in current dollars, with
+//         nothing marking the difference.
+function RetirementMonthlyBudget({ summary, retirementAge }) {
   const deltaIsPositive = summary.monthlyBudgetDelta >= 0;
+  const affordablePct = Math.round(summary.sustainableMultiplier * 100);
 
   return (
     <div className="chart-card">
       <div className="chart-header">
-        <h3>Monthly Budget At Retirement</h3>
+        <h3>
+          Monthly Budget At Retirement
+          <Tooltip text="Compares your planned spending against the most you could spend every year without running the portfolio dry before your planning horizon." />
+        </h3>
         <p>
-          Planned monthly expenses are inflated to retirement age and compared against
-          estimated sustainable monthly spending.
+          Figures are in age-{retirementAge} dollars unless marked otherwise — your planned
+          budget inflated forward to the year you retire.
         </p>
       </div>
 
       <div className="budget-metric-grid">
         <article className="budget-metric">
-          <h4>Planned Monthly Spend</h4>
+          <h4>
+            Planned Monthly Spend
+            <Tooltip text="Your entered monthly budget, inflated to retirement-year dollars." />
+          </h4>
           <p>{formatMoney(summary.plannedMonthlySpendAtRetirement)}</p>
+          <small className="metric-help">
+            {formatMoney(summary.plannedMonthlySpendToday)}/mo in today&rsquo;s dollars
+          </small>
         </article>
         <article className="budget-metric">
-          <h4>Sustainable Monthly Spend</h4>
+          <h4>
+            Sustainable Monthly Spend
+            <Tooltip text="Solved from the projection: the largest budget your portfolio, Social Security and pension can fund every year through your planning horizon." />
+          </h4>
           <p>{formatMoney(summary.sustainableMonthlySpend)}</p>
+          <small className="metric-help">
+            {formatMoney(summary.sustainableMonthlySpendToday)}/mo in today&rsquo;s dollars
+          </small>
         </article>
         <article className="budget-metric">
-          <h4>Monthly Cushion / Gap</h4>
+          <h4>
+            Monthly Cushion / Gap
+            <Tooltip text="Difference between sustainable and planned spending, holding for every year of retirement — not just the first." />
+          </h4>
           <p className={deltaIsPositive ? "budget-positive" : "budget-negative"}>
             {deltaIsPositive ? "+" : "-"}
             {formatMoney(Math.abs(summary.monthlyBudgetDelta))}
           </p>
+          <small className="metric-help">
+            {`You can fund about ${affordablePct}% of your planned budget.`}
+          </small>
         </article>
       </div>
 
@@ -1229,11 +1224,10 @@ function RetirementMonthlyBudget({ summary }) {
   );
 }
 
-function RentVsBuyPage({ inputs, setInputs, onSwitch }) {
+function RentVsBuyPage({ inputs, analysis, onFieldChange, onReset, onSwitch, onHome }) {
   const [expandedGroups, setExpandedGroups] = useState(() =>
     RENT_BUY_FIELD_GROUPS.map(() => true),
   );
-  const analysis = useMemo(() => calculateRentVsBuy(inputs), [inputs]);
   const totalMonthlyOwnerCost = useMemo(
     () => computeTotalMonthlyOwnerCost(inputs),
     [inputs],
@@ -1243,18 +1237,22 @@ function RentVsBuyPage({ inputs, setInputs, onSwitch }) {
     {
       title: "Renting Net Cost",
       value: formatMoney(summary.renterNetCost),
+      tooltip: "Total rent and insurance paid over the horizon, minus the ending value of invested savings.",
     },
     {
       title: "Buying Net Cost",
       value: formatMoney(summary.ownerNetCost),
+      tooltip: "Total ownership costs (mortgage, taxes, insurance, maintenance, closing & selling costs) minus home equity at end of horizon.",
     },
     {
       title: "Estimated Mortgage Payment",
       value: `${formatMoney(assumptions.monthlyMortgagePayment)}/mo`,
+      tooltip: "Monthly principal and interest only. Does not include property taxes, insurance, HOA, or maintenance.",
     },
     {
       title: "Total Monthly Owner Cost",
       value: formatMonthlyOwnerCost(totalMonthlyOwnerCost),
+      tooltip: "Includes principal & interest, property tax, insurance, HOA, and maintenance. One-time closing and selling costs are excluded.",
       helpText:
         "Includes principal & interest + tax + insurance + HOA + maintenance. One-time costs excluded.",
     },
@@ -1274,13 +1272,14 @@ function RentVsBuyPage({ inputs, setInputs, onSwitch }) {
         description="Adjust assumptions and compare long-term housing costs, taxes, maintenance, equity, and investment opportunity cost in real time."
         toggleLabel="Retirement Calculator"
         onToggle={onSwitch}
+        onHome={onHome}
       />
 
       <div className="layout">
         <aside className="panel controls-panel">
           <div className="panel-title-row">
             <h2>Inputs</h2>
-            <button className="ghost-button" onClick={() => setInputs(DEFAULT_RENT_BUY_INPUTS)}>
+            <button className="ghost-button" onClick={onReset}>
               Reset
             </button>
           </div>
@@ -1299,12 +1298,8 @@ function RentVsBuyPage({ inputs, setInputs, onSwitch }) {
                   ),
                 )
               }
-              onFieldChange={(name, value) =>
-                setInputs((previous) => ({
-                  ...previous,
-                  [name]: value,
-                }))
-              }
+              page="rentBuy"
+              onFieldChange={onFieldChange}
             />
           ))}
         </aside>
@@ -1315,7 +1310,10 @@ function RentVsBuyPage({ inputs, setInputs, onSwitch }) {
             <div className="metric-grid">
               {metricCards.map((card) => (
                 <article key={card.title}>
-                  <h4>{card.title}</h4>
+                  <h4>
+                    {card.title}
+                    {card.tooltip ? <Tooltip text={card.tooltip} /> : null}
+                  </h4>
                   <p>{card.value}</p>
                   {card.helpText ? (
                     <small className="metric-help" title={card.helpText}>
@@ -1332,7 +1330,7 @@ function RentVsBuyPage({ inputs, setInputs, onSwitch }) {
             </p>
           </section>
 
-          <RentVsBuyChart timeline={timeline} />
+          <RentVsBuyChart timeline={timeline} breakEvenYear={summary.breakEvenYear} />
           <RentVsBuyBreakdown summary={summary} years={assumptions.years} />
         </main>
       </div>
@@ -1340,20 +1338,28 @@ function RentVsBuyPage({ inputs, setInputs, onSwitch }) {
   );
 }
 
-function RetirementPage({ inputs, setInputs, onSwitch }) {
+function RetirementPage({ inputs, derivedHousingNote, onFieldChange, onReset, onSwitch, onHome }) {
   const [expandedGroups, setExpandedGroups] = useState(() =>
     RETIREMENT_FIELD_GROUPS.map(() => true),
   );
   const analysis = useMemo(() => calculateRetirement(inputs), [inputs]);
   const { assumptions, summary, timeline } = analysis;
 
+  // AI_CHANGE:
+  // Tool: Claude Code
+  // Model: Claude Opus 4.8
+  // Timestamp: 2026-07-22T00:00:00-04:00
+  // Purpose: Drives the headline verdict from the year-by-year projection and reports the
+  //          withdrawal-rule comparison as a secondary note, calling out disagreement.
+  // Reason: The verdict used to come from the static 4% target while the subline came from
+  //         the simulation, so the page could read "On track" directly above "Portfolio
+  //         depletes around age 92" — true in 31 of 192 swept input combinations.
   const outcomeMessage = summary.retireReady
-    ? `On track: projected balance beats your withdrawal-rule target by ${formatMoney(
-        Math.abs(summary.targetGap),
-      )} at retirement.`
-    : `Gap to target: increase projected retirement assets by ${formatMoney(
-        Math.abs(summary.targetGap),
-      )} to meet your withdrawal-rule target.`;
+    ? `On track: the projection funds your planned spending through age ${assumptions.lifeExpectancy}.`
+    : `Short: the projection runs out at age ${summary.runOutAge}, before your planning horizon of ${assumptions.lifeExpectancy}.`;
+  const targetNote = summary.meetsWithdrawalRuleTarget
+    ? `Your projected balance also clears the ${(assumptions.safeWithdrawalRate * 100).toFixed(1)}% withdrawal-rule target by ${formatMoney(Math.abs(summary.targetGap))}.`
+    : `Your projected balance is ${formatMoney(Math.abs(summary.targetGap))} short of the ${(assumptions.safeWithdrawalRate * 100).toFixed(1)}% withdrawal-rule target.`;
   const monthlyBudgetMessage =
     summary.monthlyBudgetDelta >= 0
       ? `Estimated monthly cushion at retirement: ${formatMoney(
@@ -1370,6 +1376,7 @@ function RetirementPage({ inputs, setInputs, onSwitch }) {
         description="Model retirement readiness using savings, contributions, market returns, inflation, taxes, Social Security, and pension income."
         toggleLabel="Rent vs Buy Calculator"
         onToggle={onSwitch}
+        onHome={onHome}
       />
 
       <div className="layout">
@@ -1378,7 +1385,7 @@ function RetirementPage({ inputs, setInputs, onSwitch }) {
             <h2>Inputs</h2>
             <button
               className="ghost-button"
-              onClick={() => setInputs(DEFAULT_RETIREMENT_INPUTS)}
+              onClick={onReset}
             >
               Reset
             </button>
@@ -1398,12 +1405,9 @@ function RetirementPage({ inputs, setInputs, onSwitch }) {
                   ),
                 )
               }
-              onFieldChange={(name, value) =>
-                setInputs((previous) => ({
-                  ...previous,
-                  [name]: value,
-                }))
-              }
+              page="retirement"
+              fieldNotes={{ monthlyHousing: derivedHousingNote }}
+              onFieldChange={onFieldChange}
             />
           ))}
         </aside>
@@ -1413,22 +1417,32 @@ function RetirementPage({ inputs, setInputs, onSwitch }) {
             <p className="result-line">{outcomeMessage}</p>
             <div className="metric-grid">
               <article>
-                <h4>Balance At Retirement</h4>
+                <h4>
+                  Balance At Retirement
+                  <Tooltip text="Projected total portfolio value on the day you retire, based on current savings, contributions, and investment growth." />
+                </h4>
                 <p>{formatMoney(summary.balanceAtRetirement)}</p>
+                <small className="metric-help">
+                  {formatMoney(summary.balanceAtRetirementToday)} in today&rsquo;s dollars
+                </small>
               </article>
               <article>
-                <h4>Withdrawal-Rule Target</h4>
+                <h4>
+                  Withdrawal-Rule Target
+                  <Tooltip text="Portfolio size needed at retirement to fund your spending using your safe withdrawal rate. Formula: annual portfolio draw ÷ withdrawal rate." />
+                </h4>
                 <p>{formatMoney(summary.requiredNestEgg)}</p>
               </article>
               <article>
-                <h4>Sustainable Monthly Spend</h4>
+                <h4>
+                  Sustainable Monthly Spend
+                  <Tooltip text="Solved from the projection: the largest budget your portfolio, Social Security and pension can fund every year through your planning horizon." />
+                </h4>
                 <p>{formatMoney(summary.sustainableMonthlySpend)}</p>
               </article>
             </div>
             <p className="result-subline">
-              {summary.runOutAge
-                ? `Portfolio depletes around age ${summary.runOutAge}. ${monthlyBudgetMessage}`
-                : `Portfolio remains funded through age ${assumptions.lifeExpectancy}. ${monthlyBudgetMessage}`}
+              {`${targetNote} ${monthlyBudgetMessage}`}
             </p>
           </section>
 
@@ -1436,7 +1450,10 @@ function RetirementPage({ inputs, setInputs, onSwitch }) {
             timeline={timeline}
             retirementAge={assumptions.retirementAge}
           />
-          <RetirementMonthlyBudget summary={summary} />
+          <RetirementMonthlyBudget
+            summary={summary}
+            retirementAge={assumptions.retirementAge}
+          />
           <RetirementBreakdown summary={summary} />
         </main>
       </div>
@@ -1444,48 +1461,148 @@ function RetirementPage({ inputs, setInputs, onSwitch }) {
   );
 }
 
+// AI_CHANGE:
+// Tool: Claude Code
+// Model: Claude Opus 4.8
+// Timestamp: 2026-07-22T00:00:00-04:00
+// Purpose: Owns both input sets and mirrors edits to shared assumptions across them, and
+//          derives the retirement budget's housing line from the rent-vs-buy outcome.
+// Reason: The two calculators describe one household, so inflation and the working-years
+//         market return must be a single value rather than two that silently disagree. The
+//         housing line is derived rather than mirrored because it is an output of one page
+//         feeding an input of the other, not a shared assumption.
 function App() {
-  const [mode, setMode] = useState(APP_MODE.RENT_BUY);
+  const [mode, setMode] = useState(getInitialMode);
   const [rentBuyInputs, setRentBuyInputs] = useState(DEFAULT_RENT_BUY_INPUTS);
   const [retirementInputs, setRetirementInputs] = useState(DEFAULT_RETIREMENT_INPUTS);
-  const rentVsBuyWinner = useMemo(
-    () => calculateRentVsBuy(rentBuyInputs).summary.winner,
+
+  const rentVsBuyAnalysis = useMemo(
+    () => calculateRentVsBuy(rentBuyInputs),
     [rentBuyInputs],
   );
+  const rentVsBuyWinner = rentVsBuyAnalysis.summary.winner;
+
+  // The housing line depends on both pages: what the rent-vs-buy comparison recommends, and
+  // how far away retirement is (which decides whether a mortgage is still being paid).
+  const derivedHousing = useMemo(() => {
+    const loanTermYears = clamp(
+      Math.round(Number(rentBuyInputs.loanTermYears) || 30),
+      1,
+      40,
+    );
+    const currentAge = clamp(Math.round(Number(retirementInputs.currentAge) || 35), 18, 90);
+    const retirementAge = Math.max(
+      clamp(Math.round(Number(retirementInputs.retirementAge) || 67), 40, 95),
+      currentAge + 1,
+    );
+    const context = {
+      winner: rentVsBuyWinner,
+      loanTermYears,
+      yearsToRetirement: retirementAge - currentAge,
+    };
+
+    return {
+      value: getDerivedMonthlyHousing({
+        ...context,
+        ownerCostBreakdown: computeMonthlyOwnerCostBreakdown(rentBuyInputs),
+        monthlyRent:
+          Math.max(Number(rentBuyInputs.monthlyRent) || 0, 0) +
+          Math.max(Number(rentBuyInputs.rentersInsuranceMonthly) || 0, 0),
+      }),
+      note: describeDerivedHousing(context),
+    };
+  }, [
+    rentBuyInputs,
+    rentVsBuyWinner,
+    retirementInputs.currentAge,
+    retirementInputs.retirementAge,
+  ]);
+
+  const handleRentBuyChange = (name, value) => {
+    setRentBuyInputs((previous) => ({ ...previous, [name]: value }));
+
+    const counterpart = getLinkedCounterpart("rentBuy", name);
+    if (counterpart) {
+      setRetirementInputs((previous) => ({ ...previous, [counterpart]: value }));
+    }
+  };
+
+  const handleRetirementChange = (name, value) => {
+    setRetirementInputs((previous) => ({ ...previous, [name]: value }));
+
+    const counterpart = getLinkedCounterpart("retirement", name);
+    if (counterpart) {
+      setRentBuyInputs((previous) => ({ ...previous, [counterpart]: value }));
+    }
+  };
+
+  // Resetting one page must not leave the shared assumptions disagreeing, so a reset also
+  // republishes the restored values to the other page.
+  const handleRentBuyReset = () => {
+    setRentBuyInputs(DEFAULT_RENT_BUY_INPUTS);
+    setRetirementInputs((previous) => ({
+      ...previous,
+      ...Object.fromEntries(
+        LINKED_FIELDS.map((link) => [link.retirement, DEFAULT_RENT_BUY_INPUTS[link.rentBuy]]),
+      ),
+    }));
+  };
+
+  const handleRetirementReset = () => {
+    setRetirementInputs(DEFAULT_RETIREMENT_INPUTS);
+    setRentBuyInputs((previous) => ({
+      ...previous,
+      ...Object.fromEntries(
+        LINKED_FIELDS.map((link) => [link.rentBuy, DEFAULT_RETIREMENT_INPUTS[link.retirement]]),
+      ),
+    }));
+  };
 
   useEffect(() => {
     const frameClasses = ["body-frame-rent", "body-frame-buy", "body-frame-tie"];
     document.body.classList.remove(...frameClasses);
 
     const winnerClass =
-      rentVsBuyWinner === "buy"
-        ? "body-frame-buy"
-        : rentVsBuyWinner === "rent"
-          ? "body-frame-rent"
-          : "body-frame-tie";
+      mode === APP_MODE.HUB
+        ? "body-frame-tie"
+        : rentVsBuyWinner === "buy"
+          ? "body-frame-buy"
+          : rentVsBuyWinner === "rent"
+            ? "body-frame-rent"
+            : "body-frame-tie";
 
     document.body.classList.add(winnerClass);
 
     return () => {
       document.body.classList.remove(...frameClasses);
     };
-  }, [rentVsBuyWinner]);
+  }, [mode, rentVsBuyWinner]);
+
+  if (mode === APP_MODE.HUB) {
+    return <AppHub onSelectApp={setMode} />;
+  }
 
   if (mode === APP_MODE.RENT_BUY) {
     return (
       <RentVsBuyPage
         inputs={rentBuyInputs}
-        setInputs={setRentBuyInputs}
+        analysis={rentVsBuyAnalysis}
+        onFieldChange={handleRentBuyChange}
+        onReset={handleRentBuyReset}
         onSwitch={() => setMode(APP_MODE.RETIREMENT)}
+        onHome={() => setMode(APP_MODE.HUB)}
       />
     );
   }
 
   return (
     <RetirementPage
-      inputs={retirementInputs}
-      setInputs={setRetirementInputs}
+      inputs={{ ...retirementInputs, monthlyHousing: derivedHousing.value }}
+      derivedHousingNote={derivedHousing.note}
+      onFieldChange={handleRetirementChange}
+      onReset={handleRetirementReset}
       onSwitch={() => setMode(APP_MODE.RENT_BUY)}
+      onHome={() => setMode(APP_MODE.HUB)}
     />
   );
 }
