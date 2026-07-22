@@ -12,7 +12,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { calculateRentVsBuy } from "./rentVsBuy.js";
-import { getMortgagePayment } from "./rentVsBuyOwnerCost.js";
+import {
+  computeMonthlyOwnerCostBreakdown,
+  getMortgagePayment,
+} from "./rentVsBuyOwnerCost.js";
 import { DEFAULT_RENT_BUY_INPUTS } from "./defaults.js";
 
 function closeTo(actual, expected, tolerance, message) {
@@ -385,4 +388,89 @@ test("the renter's portfolio is never allowed to become a compounding debt", () 
   });
   const worst = Math.min(...timeline.map((point) => point.renterInvestment));
   assert.ok(worst >= 0, `renter portfolio went to ${worst.toFixed(0)}, i.e. leveraged debt`);
+});
+
+// --- PMI ---------------------------------------------------------------------
+
+test("a 20% down payment pays no PMI", () => {
+  const withRate = calculateRentVsBuy({ ...DEFAULT_RENT_BUY_INPUTS, pmiRatePct: 1.5 });
+  const withoutRate = calculateRentVsBuy({ ...DEFAULT_RENT_BUY_INPUTS, pmiRatePct: 0 });
+  closeTo(
+    withRate.summary.ownerOutflow,
+    withoutRate.summary.ownerOutflow,
+    0.01,
+    "PMI rate must be irrelevant at 20% down",
+  );
+});
+
+test("a low down payment charges PMI and raises the cost of buying", () => {
+  const base = { ...DEFAULT_RENT_BUY_INPUTS, downPaymentPct: 5 };
+  const withPmi = calculateRentVsBuy({ ...base, pmiRatePct: 1 });
+  const withoutPmi = calculateRentVsBuy({ ...base, pmiRatePct: 0 });
+  assert.ok(
+    withPmi.summary.ownerOutflow > withoutPmi.summary.ownerOutflow,
+    "PMI should increase what an owner pays",
+  );
+  assert.ok(
+    withPmi.summary.ownerNetCost > withoutPmi.summary.ownerNetCost,
+    "PMI should increase owner net cost",
+  );
+});
+
+test("PMI stops once the balance amortizes below 80% of the purchase price", () => {
+  // No appreciation and no other running costs, so the only difference between these two
+  // runs is PMI. Its total must equal the premium for exactly the months the balance is
+  // above 80% of the original price.
+  const base = {
+    ...DEFAULT_RENT_BUY_INPUTS,
+    years: 30,
+    downPaymentPct: 10,
+    loanTermYears: 30,
+    propertyTaxPct: 0,
+    maintenancePct: 0,
+    homeInsuranceAnnual: 0,
+    hoaMonthly: 0,
+    closingCostPct: 0,
+    homeAppreciationPct: 0,
+    annualInflationPct: 0,
+  };
+  const rate = 1;
+  const withPmi = calculateRentVsBuy({ ...base, pmiRatePct: rate });
+  const withoutPmi = calculateRentVsBuy({ ...base, pmiRatePct: 0 });
+  const totalPmiPaid = withPmi.summary.ownerOutflow - withoutPmi.summary.ownerOutflow;
+
+  // Independently amortize to count the months above 80% LTV.
+  const principal = base.homePrice * 0.9;
+  const payment = getMortgagePayment(principal, base.mortgageRatePct, 30);
+  const monthlyRate = base.mortgageRatePct / 100 / 12;
+  let balance = principal;
+  let months = 0;
+  for (let month = 1; month <= 360; month += 1) {
+    if (balance <= base.homePrice * 0.8) break;
+    months += 1;
+    balance -= payment - balance * monthlyRate;
+  }
+  const expected = ((principal * rate) / 100 / 12) * months;
+
+  assert.ok(months > 0 && months < 360, `sanity: PMI runs for ${months} months, not forever`);
+  closeTo(totalPmiPaid, expected, 1, "total PMI paid");
+});
+
+test("PMI is included in the all-in monthly owner cost card", () => {
+  const breakdown = computeMonthlyOwnerCostBreakdown({
+    ...DEFAULT_RENT_BUY_INPUTS,
+    downPaymentPct: 5,
+    pmiRatePct: 0.6,
+  });
+  const expectedPmi = (DEFAULT_RENT_BUY_INPUTS.homePrice * 0.95 * 0.006) / 12;
+  closeTo(breakdown.pmiMonthly, expectedPmi, 0.01, "monthly PMI");
+  assert.ok(breakdown.total > breakdown.pmiMonthly);
+});
+
+test("the owner cost card reports no PMI at 20% down", () => {
+  const breakdown = computeMonthlyOwnerCostBreakdown({
+    ...DEFAULT_RENT_BUY_INPUTS,
+    pmiRatePct: 1.5,
+  });
+  assert.equal(breakdown.pmiMonthly, 0);
 });

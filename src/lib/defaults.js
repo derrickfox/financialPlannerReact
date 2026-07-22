@@ -19,6 +19,9 @@ export const DEFAULT_RENT_BUY_INPUTS = {
   homeInsuranceAnnual: 1800,
   maintenancePct: 1,
   hoaMonthly: 150,
+  // Annual PMI premium as a percentage of the original loan amount. Only charged while the
+  // balance is above 80% of the purchase price, so the shipped 20%-down default pays none.
+  pmiRatePct: 0.5,
   closingCostPct: 3,
   sellingCostPct: 6,
   homeAppreciationPct: 3,

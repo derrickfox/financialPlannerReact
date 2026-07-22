@@ -9,7 +9,7 @@
 //         unchanged by this move; correctness fixes are tracked separately.
 
 import { annualToMonthlyRate, asNumber, clamp } from "./finance.js";
-import { getMortgagePayment } from "./rentVsBuyOwnerCost.js";
+import { getMonthlyPmi, getMortgagePayment } from "./rentVsBuyOwnerCost.js";
 
 export function calculateRentVsBuy(inputs) {
   const years = clamp(Math.round(asNumber(inputs.years, 10)), 1, 50);
@@ -29,6 +29,7 @@ export function calculateRentVsBuy(inputs) {
     0,
   );
   const maintenanceRate = Math.max(asNumber(inputs.maintenancePct, 0), 0) / 100;
+  const pmiRatePct = Math.max(asNumber(inputs.pmiRatePct, 0), 0);
   const hoaStart = Math.max(asNumber(inputs.hoaMonthly, 0), 0);
   const closingCostRate = Math.max(asNumber(inputs.closingCostPct, 0), 0) / 100;
   const sellingCostRate = clamp(asNumber(inputs.sellingCostPct, 0), 0, 100) / 100;
@@ -95,6 +96,10 @@ export function calculateRentVsBuy(inputs) {
 
     renterInvestment *= 1 + monthlyInvestmentGrowth;
 
+    // Captured before this month's principal payment: the PMI premium is due alongside the
+    // payment, so it is assessed on the balance at the start of the period.
+    const openingBalance = remainingBalance;
+
     let mortgagePaymentThisMonth = 0;
     if (month <= mortgageMonths && remainingBalance > 0.01) {
       const interestPaid = remainingBalance * monthlyMortgageRate;
@@ -110,13 +115,29 @@ export function calculateRentVsBuy(inputs) {
 
     const propertyTaxThisMonth = (homeValue * propertyTaxRate) / 12;
     const maintenanceThisMonth = (homeValue * maintenanceRate) / 12;
+    // AI_CHANGE:
+    // Tool: Claude Code
+    // Model: Claude Opus 4.8
+    // Timestamp: 2026-07-22T00:00:00-04:00
+    // Purpose: Charges PMI each month until the balance amortizes below 80% of the original
+    //          purchase price.
+    // Reason: Buying was previously costed as though PMI never existed, despite the UI
+    //         telling users that a 20% down payment is what avoids it. Cancellation is keyed
+    //         to the original price, not the appreciated value, matching lender practice.
+    const pmiThisMonth = getMonthlyPmi({
+      loanBalance: openingBalance,
+      homePrice,
+      pmiRatePct,
+      originalLoanAmount: mortgagePrincipal,
+    });
 
     const ownerMonthlyCost =
       mortgagePaymentThisMonth +
       propertyTaxThisMonth +
       maintenanceThisMonth +
       homeInsurance +
-      hoa;
+      hoa +
+      pmiThisMonth;
     const renterMonthlyCost = rent + rentersInsurance;
 
     ownerOutflow += ownerMonthlyCost;

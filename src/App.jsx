@@ -130,7 +130,7 @@ const RENT_BUY_FIELD_GROUPS = [
       {
         name: "downPaymentPct",
         label: "Down Payment",
-        tooltip: "Percentage of purchase price paid upfront. Putting down 20% avoids private mortgage insurance (PMI).",
+        tooltip: "Percentage of purchase price paid upfront. Below 20% you pay private mortgage insurance until the loan amortizes under 80% of the purchase price — set the rate in the PMI Rate field.",
         suffix: "%",
         min: 0,
         max: 100,
@@ -181,6 +181,14 @@ const RENT_BUY_FIELD_GROUPS = [
         suffix: "$/mo",
         min: 0,
         step: 25,
+      },
+      {
+        name: "pmiRatePct",
+        label: "PMI Rate",
+        tooltip: "Annual private mortgage insurance premium as a percentage of the original loan amount, typically 0.3–1.5%. Charged only while the balance is above 80% of the purchase price, so a 20% down payment pays none.",
+        suffix: "%/yr",
+        min: 0,
+        step: 0.05,
       },
       {
         name: "closingCostPct",
@@ -422,7 +430,7 @@ const RETIREMENT_FIELD_GROUPS = [
       {
         name: "retirementIncomeTaxPct",
         label: "Retirement Income Tax Rate",
-        tooltip: "Effective tax rate on retirement income withdrawals — reduces the net spending power of each dollar taken from the portfolio.",
+        tooltip: "Effective tax rate applied to portfolio withdrawals only. Social Security and pension income are modelled as received net of tax, because how much of a Social Security benefit is taxable depends on provisional-income thresholds this calculator does not model.",
         suffix: "%",
         min: 0,
         max: 95,
@@ -1508,9 +1516,9 @@ function RentVsBuyPage({ inputs, analysis, onFieldChange, onReset, onSwitch, onH
     {
       title: "Total Monthly Owner Cost",
       value: formatMonthlyOwnerCost(totalMonthlyOwnerCost),
-      tooltip: "Includes principal & interest, property tax, insurance, HOA, and maintenance. One-time closing and selling costs are excluded.",
+      tooltip: "Includes principal & interest, property tax, insurance, HOA, maintenance, and PMI where the down payment is under 20%. One-time closing and selling costs are excluded.",
       helpText:
-        "Includes principal & interest + tax + insurance + HOA + maintenance. One-time costs excluded.",
+        "Includes principal & interest + tax + insurance + HOA + maintenance + PMI. One-time costs excluded.",
     },
   ];
 
